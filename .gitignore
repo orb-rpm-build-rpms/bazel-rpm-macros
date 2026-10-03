@@ -1,0 +1,5 @@
+# Local build artifacts.
+/rpmbuild/
+*.src.rpm
+*.rpm
+/result/

@@ -1,0 +1,61 @@
+# RPM macros for building software with Bazel on Fedora.
+#
+# A package that builds with Bazel adds "BuildRequires: bazel-rpm-macros"
+# (which pulls in Bazel and a JDK) and then, in its %build section, calls:
+#
+#     %bazel build //:target
+#
+# The %bazel macro runs Bazel offline against a vendored set of external
+# modules, using the host JDK and Fedora's standard compiler and linker flags.
+# The vendored modules must live in the directory named by %_bazel_vendor_dir
+# (relative to the build directory); produce one ahead of time with Bazel's
+# vendor subcommand so that the build needs no network access.
+#
+# These defaults target Bzlmod-era Bazel (8.x and 9.x), which is why they use
+# the vendor directory and download-disabling flags. WORKSPACE-era Bazel (7.x
+# and older) fetches its dependencies differently (a distribution directory and
+# the repository cache rather than a vendor directory); when a compat bazelN
+# package is added for such projects, this file should grow a matching macro or
+# a version-aware branch rather than overloading %bazel.
+
+# The Bazel executable to invoke. Override with "%global __bazel bazelN" to
+# build against a parallel-installed compat version.
+%__bazel bazel
+
+# Directory where Bazel keeps its build state; kept under the build tree so it
+# is cleaned with the rest of the build and never touches the user's home.
+%_bazel_output_user_root %{_builddir}/.cache/bazel
+
+# Directory holding the vendored external modules the offline build reads from.
+%_bazel_vendor_dir vendor
+
+# The Fedora-standard bazelrc the %bazel macro generates and consumes.
+%_bazel_rc %{_builddir}/.bazelrc.fedora
+
+# %bazel <subcommand> <targets...> [extra Bazel flags]
+#
+# Generates a bazelrc that disables all network access, pins the host JDK, and
+# forwards Fedora's build flags to the C/C++ toolchain, then invokes Bazel in
+# batch mode against it. Options placed under "build" are inherited by the
+# test, run and coverage commands, so the one block covers them all. Anything
+# the caller appends after the macro wins over these defaults.
+#
+# Fedora's hardening spec files (annobin, package notes) read the RPM_* build
+# environment variables, which Bazel would otherwise strip from its actions, so
+# they are passed through with --action_env.
+%bazel \
+  { \
+    echo "build --vendor_dir=%{_bazel_vendor_dir}"; \
+    echo "build --repository_disable_download"; \
+    echo "build --lockfile_mode=error"; \
+    echo "build --java_runtime_version=local_jdk"; \
+    echo "build --tool_java_runtime_version=local_jdk"; \
+    echo "build --compilation_mode=opt"; \
+    for _bazel_flag in %{build_cflags};   do echo "build --conlyopt=${_bazel_flag}"; done; \
+    for _bazel_flag in %{build_cxxflags}; do echo "build --cxxopt=${_bazel_flag}"; done; \
+    for _bazel_flag in %{build_ldflags};  do echo "build --linkopt=${_bazel_flag}"; done; \
+    for _bazel_env in RPM_ARCH RPM_OS RPM_PACKAGE_NAME RPM_PACKAGE_VERSION RPM_PACKAGE_RELEASE; do echo "build --action_env=${_bazel_env}"; done; \
+  } > %{_bazel_rc}; \
+  JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"; \
+  export JAVA_HOME; \
+  %{__bazel} --batch --output_user_root=%{_bazel_output_user_root} --bazelrc=%{_bazel_rc}
